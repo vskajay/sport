@@ -20,36 +20,28 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      # Find the actual project file
       - name: Find project
         shell: pwsh
         run: |
-          $projects = Get-ChildItem -Path . -Filter *.csproj -Recurse
+          $project = Get-ChildItem -Path . -Filter *.csproj -Recurse |
+            Select-Object -First 1
 
-          if ($projects.Count -eq 0) {
+          if (-not $project) {
             Write-Error "No .csproj file found."
             exit 1
           }
 
-          Write-Host "Projects found:"
-          $projects | ForEach-Object {
-            Write-Host $_.FullName
-          }
+          Write-Host "Project: $($project.FullName)"
 
-      # Restore the project
       - name: Restore
         shell: pwsh
         run: |
           $project = Get-ChildItem -Path . -Filter *.csproj -Recurse |
             Select-Object -First 1
 
-          Write-Host "Restoring: $($project.FullName)"
-
           msbuild $project.FullName `
-            /t:Restore `
-            /p:Configuration=Release
+            /t:Restore
 
-      # Build the project
       - name: Build
         shell: pwsh
         run: |
@@ -60,43 +52,45 @@ jobs:
 
           msbuild $project.FullName `
             /p:Configuration=Release `
-            /p:Platform="Any CPU"
+            /p:Platform=AnyCPU `
+            /p:OutputPath="$env:GITHUB_WORKSPACE\bin\Release\"
 
-      # Publish classic ASP.NET Web Application
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Build failed."
+            exit $LASTEXITCODE
+          }
+
       - name: Publish
         shell: pwsh
         run: |
           $project = Get-ChildItem -Path . -Filter *.csproj -Recurse |
             Select-Object -First 1
 
-          $publishPath = Join-Path $env:GITHUB_WORKSPACE "publish"
+          $publishPath = "$env:GITHUB_WORKSPACE\publish"
 
-          Write-Host "Project: $($project.FullName)"
+          Write-Host "Publishing: $($project.FullName)"
           Write-Host "Publish path: $publishPath"
 
           New-Item -ItemType Directory -Force -Path $publishPath | Out-Null
 
           msbuild $project.FullName `
             /p:Configuration=Release `
-            /p:Platform="Any CPU" `
+            /p:Platform=AnyCPU `
+            /p:OutputPath="$env:GITHUB_WORKSPACE\bin\Release\" `
             /p:DeployOnBuild=true `
             /p:WebPublishMethod=FileSystem `
             /p:DeleteExistingFiles=true `
-            /p:publishUrl="$publishPath"
+            /p:PublishUrl="$publishPath"
 
           if ($LASTEXITCODE -ne 0) {
-            Write-Error "MSBuild publish failed."
+            Write-Error "Publish failed."
             exit $LASTEXITCODE
           }
 
-      # Check published files
       - name: Verify publish
         shell: pwsh
         run: |
-          $publishPath = Join-Path $env:GITHUB_WORKSPACE "publish"
-
-          Write-Host "Checking publish directory:"
-          Write-Host $publishPath
+          $publishPath = "$env:GITHUB_WORKSPACE\publish"
 
           if (-not (Test-Path $publishPath)) {
             Write-Error "Publish folder was not created."
@@ -113,17 +107,14 @@ jobs:
           Write-Host "Published files:"
           $files | Select-Object FullName
 
-      # Upload published application
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: .net-app
           path: ${{ github.workspace }}\publish
 
-
   deploy:
     runs-on: windows-latest
-
     needs: build
 
     steps:
@@ -132,13 +123,6 @@ jobs:
         with:
           name: .net-app
           path: ./publish
-
-      - name: Show deployment files
-        shell: pwsh
-        run: |
-          Write-Host "Files to deploy:"
-          Get-ChildItem ./publish -Recurse |
-            Select-Object FullName
 
       - name: Deploy to Azure Web App
         id: deploy-to-webapp
