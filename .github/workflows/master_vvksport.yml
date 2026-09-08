@@ -14,38 +14,144 @@ jobs:
       contents: read
 
     steps:
+      # 1. Checkout source code
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 2. Install/configure MSBuild
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
+      # 3. Find solution/project
+      - name: Find solution and project
+        shell: pwsh
+        run: |
+          Write-Host "Solution files:"
+          Get-ChildItem -Path . -Filter *.sln -Recurse |
+            Select-Object -ExpandProperty FullName
+
+          Write-Host ""
+          Write-Host "Project files:"
+          Get-ChildItem -Path . -Filter *.csproj -Recurse |
+            Select-Object -ExpandProperty FullName
+
+      # 4. Restore
       - name: Restore
-        run: msbuild Sport/Sport.sln /t:Restore /p:Configuration=Release
+        shell: pwsh
+        run: |
+          $solution = Get-ChildItem -Path . -Filter *.sln -Recurse |
+            Select-Object -First 1
 
+          if ($solution) {
+            Write-Host "Restoring solution: $($solution.FullName)"
+            msbuild $solution.FullName /t:Restore /p:Configuration=Release
+          }
+          else {
+            $project = Get-ChildItem -Path . -Filter *.csproj -Recurse |
+              Select-Object -First 1
+
+            if (-not $project) {
+              Write-Error "No .sln or .csproj file found."
+              exit 1
+            }
+
+            Write-Host "Restoring project: $($project.FullName)"
+            msbuild $project.FullName /t:Restore /p:Configuration=Release
+          }
+
+      # 5. Build
       - name: Build
-        run: msbuild Sport/Sport.sln /p:Configuration=Release
+        shell: pwsh
+        run: |
+          $solution = Get-ChildItem -Path . -Filter *.sln -Recurse |
+            Select-Object -First 1
 
+          if ($solution) {
+            Write-Host "Building solution: $($solution.FullName)"
+            msbuild $solution.FullName /p:Configuration=Release
+          }
+          else {
+            $project = Get-ChildItem -Path . -Filter *.csproj -Recurse |
+              Select-Object -First 1
+
+            if (-not $project) {
+              Write-Error "No .sln or .csproj file found."
+              exit 1
+            }
+
+            Write-Host "Building project: $($project.FullName)"
+            msbuild $project.FullName /p:Configuration=Release
+          }
+
+      # 6. Publish
       - name: Publish
-        run: msbuild Sport/Sport.sln /p:Configuration=Release /p:DeployOnBuild=true /p:WebPublishMethod=FileSystem /p:PublishUrl="${{ github.workspace }}\publish"
+        shell: pwsh
+        run: |
+          $publishPath = "${{ github.workspace }}\publish"
 
+          $solution = Get-ChildItem -Path . -Filter *.sln -Recurse |
+            Select-Object -First 1
+
+          if ($solution) {
+            Write-Host "Publishing solution: $($solution.FullName)"
+
+            msbuild $solution.FullName `
+              /p:Configuration=Release `
+              /p:DeployOnBuild=true `
+              /p:WebPublishMethod=FileSystem `
+              /p:PublishUrl="$publishPath"
+          }
+          else {
+            $project = Get-ChildItem -Path . -Filter *.csproj -Recurse |
+              Select-Object -First 1
+
+            if (-not $project) {
+              Write-Error "No .sln or .csproj file found."
+              exit 1
+            }
+
+            Write-Host "Publishing project: $($project.FullName)"
+
+            msbuild $project.FullName `
+              /p:Configuration=Release `
+              /p:DeployOnBuild=true `
+              /p:WebPublishMethod=FileSystem `
+              /p:PublishUrl="$publishPath"
+          }
+
+      # 7. Verify publish output
+      - name: Verify publish output
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${{ github.workspace }}\publish")) {
+            Write-Error "Publish folder was not created."
+            exit 1
+          }
+
+          Get-ChildItem "${{ github.workspace }}\publish" -Recurse |
+            Select-Object FullName
+
+      # 8. Upload artifact
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: .net-app
           path: ${{ github.workspace }}\publish
 
+
   deploy:
     runs-on: windows-latest
     needs: build
 
     steps:
+      # 9. Download artifact
       - name: Download artifact
         uses: actions/download-artifact@v4
         with:
           name: .net-app
           path: ./publish
 
+      # 10. Deploy to Azure
       - name: Deploy to Azure Web App
         id: deploy-to-webapp
         uses: azure/webapps-deploy@v3
