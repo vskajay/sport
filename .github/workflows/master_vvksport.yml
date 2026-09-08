@@ -14,124 +14,106 @@ jobs:
       contents: read
 
     steps:
-      # 1. Checkout source code
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 2. Install/configure MSBuild
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      # 3. Find solution/project
-      - name: Find solution and project
+      # Find the actual project file
+      - name: Find project
         shell: pwsh
         run: |
-          Write-Host "Solution files:"
-          Get-ChildItem -Path . -Filter *.sln -Recurse |
-            Select-Object -ExpandProperty FullName
+          $projects = Get-ChildItem -Path . -Filter *.csproj -Recurse
 
-          Write-Host ""
-          Write-Host "Project files:"
-          Get-ChildItem -Path . -Filter *.csproj -Recurse |
-            Select-Object -ExpandProperty FullName
+          if ($projects.Count -eq 0) {
+            Write-Error "No .csproj file found."
+            exit 1
+          }
 
-      # 4. Restore
+          Write-Host "Projects found:"
+          $projects | ForEach-Object {
+            Write-Host $_.FullName
+          }
+
+      # Restore the project
       - name: Restore
         shell: pwsh
         run: |
-          $solution = Get-ChildItem -Path . -Filter *.sln -Recurse |
+          $project = Get-ChildItem -Path . -Filter *.csproj -Recurse |
             Select-Object -First 1
 
-          if ($solution) {
-            Write-Host "Restoring solution: $($solution.FullName)"
-            msbuild $solution.FullName /t:Restore /p:Configuration=Release
-          }
-          else {
-            $project = Get-ChildItem -Path . -Filter *.csproj -Recurse |
-              Select-Object -First 1
+          Write-Host "Restoring: $($project.FullName)"
 
-            if (-not $project) {
-              Write-Error "No .sln or .csproj file found."
-              exit 1
-            }
+          msbuild $project.FullName `
+            /t:Restore `
+            /p:Configuration=Release
 
-            Write-Host "Restoring project: $($project.FullName)"
-            msbuild $project.FullName /t:Restore /p:Configuration=Release
-          }
-
-      # 5. Build
+      # Build the project
       - name: Build
         shell: pwsh
         run: |
-          $solution = Get-ChildItem -Path . -Filter *.sln -Recurse |
+          $project = Get-ChildItem -Path . -Filter *.csproj -Recurse |
             Select-Object -First 1
 
-          if ($solution) {
-            Write-Host "Building solution: $($solution.FullName)"
-            msbuild $solution.FullName /p:Configuration=Release
-          }
-          else {
-            $project = Get-ChildItem -Path . -Filter *.csproj -Recurse |
-              Select-Object -First 1
+          Write-Host "Building: $($project.FullName)"
 
-            if (-not $project) {
-              Write-Error "No .sln or .csproj file found."
-              exit 1
-            }
+          msbuild $project.FullName `
+            /p:Configuration=Release `
+            /p:Platform="Any CPU"
 
-            Write-Host "Building project: $($project.FullName)"
-            msbuild $project.FullName /p:Configuration=Release
-          }
-
-      # 6. Publish
+      # Publish classic ASP.NET Web Application
       - name: Publish
         shell: pwsh
         run: |
-          $publishPath = "${{ github.workspace }}\publish"
-
-          $solution = Get-ChildItem -Path . -Filter *.sln -Recurse |
+          $project = Get-ChildItem -Path . -Filter *.csproj -Recurse |
             Select-Object -First 1
 
-          if ($solution) {
-            Write-Host "Publishing solution: $($solution.FullName)"
+          $publishPath = Join-Path $env:GITHUB_WORKSPACE "publish"
 
-            msbuild $solution.FullName `
-              /p:Configuration=Release `
-              /p:DeployOnBuild=true `
-              /p:WebPublishMethod=FileSystem `
-              /p:PublishUrl="$publishPath"
-          }
-          else {
-            $project = Get-ChildItem -Path . -Filter *.csproj -Recurse |
-              Select-Object -First 1
+          Write-Host "Project: $($project.FullName)"
+          Write-Host "Publish path: $publishPath"
 
-            if (-not $project) {
-              Write-Error "No .sln or .csproj file found."
-              exit 1
-            }
+          New-Item -ItemType Directory -Force -Path $publishPath | Out-Null
 
-            Write-Host "Publishing project: $($project.FullName)"
+          msbuild $project.FullName `
+            /p:Configuration=Release `
+            /p:Platform="Any CPU" `
+            /p:DeployOnBuild=true `
+            /p:WebPublishMethod=FileSystem `
+            /p:DeleteExistingFiles=true `
+            /p:publishUrl="$publishPath"
 
-            msbuild $project.FullName `
-              /p:Configuration=Release `
-              /p:DeployOnBuild=true `
-              /p:WebPublishMethod=FileSystem `
-              /p:PublishUrl="$publishPath"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "MSBuild publish failed."
+            exit $LASTEXITCODE
           }
 
-      # 7. Verify publish output
-      - name: Verify publish output
+      # Check published files
+      - name: Verify publish
         shell: pwsh
         run: |
-          if (-not (Test-Path "${{ github.workspace }}\publish")) {
+          $publishPath = Join-Path $env:GITHUB_WORKSPACE "publish"
+
+          Write-Host "Checking publish directory:"
+          Write-Host $publishPath
+
+          if (-not (Test-Path $publishPath)) {
             Write-Error "Publish folder was not created."
             exit 1
           }
 
-          Get-ChildItem "${{ github.workspace }}\publish" -Recurse |
-            Select-Object FullName
+          $files = Get-ChildItem $publishPath -Recurse
 
-      # 8. Upload artifact
+          if ($files.Count -eq 0) {
+            Write-Error "Publish folder is empty."
+            exit 1
+          }
+
+          Write-Host "Published files:"
+          $files | Select-Object FullName
+
+      # Upload published application
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -141,17 +123,23 @@ jobs:
 
   deploy:
     runs-on: windows-latest
+
     needs: build
 
     steps:
-      # 9. Download artifact
       - name: Download artifact
         uses: actions/download-artifact@v4
         with:
           name: .net-app
           path: ./publish
 
-      # 10. Deploy to Azure
+      - name: Show deployment files
+        shell: pwsh
+        run: |
+          Write-Host "Files to deploy:"
+          Get-ChildItem ./publish -Recurse |
+            Select-Object FullName
+
       - name: Deploy to Azure Web App
         id: deploy-to-webapp
         uses: azure/webapps-deploy@v3
