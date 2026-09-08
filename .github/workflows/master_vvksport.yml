@@ -1,4 +1,4 @@
-name: Build and deploy ASP.NET Core app - vvksport
+name: Build and deploy ASP.NET app to Azure Web App - vvksport
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
 
     permissions:
       contents: read
@@ -17,44 +17,164 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '8.x'
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Find project
+        shell: pwsh
+        run: |
+          $project = Get-ChildItem -Path . -Filter *.csproj -Recurse |
+            Select-Object -First 1
+
+          if (-not $project) {
+            Write-Error "No .csproj file found."
+            exit 1
+          }
+
+          Write-Host "Project found:"
+          Write-Host $project.FullName
 
       - name: Restore
-        run: dotnet restore Sport/Sport.csproj
+        shell: pwsh
+        run: |
+          $project = Get-ChildItem -Path . -Filter *.csproj -Recurse |
+            Select-Object -First 1
+
+          Write-Host "Restoring:"
+          Write-Host $project.FullName
+
+          msbuild $project.FullName `
+            /t:Restore
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Restore failed."
+            exit $LASTEXITCODE
+          }
 
       - name: Build
-        run: dotnet build Sport/Sport.csproj --configuration Release --no-restore
+        shell: pwsh
+        run: |
+          $project = Get-ChildItem -Path . -Filter *.csproj -Recurse |
+            Select-Object -First 1
 
-      - name: Publish
-        run: dotnet publish Sport/Sport.csproj \
-          --configuration Release \
-          --no-build \
-          --output ./publish
+          $outputPath = "$env:GITHUB_WORKSPACE\bin\Release\"
+
+          Write-Host "Building:"
+          Write-Host $project.FullName
+
+          msbuild $project.FullName `
+            /p:Configuration=Release `
+            /p:Platform=AnyCPU `
+            /p:OutputPath="$outputPath"
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Build failed."
+            exit $LASTEXITCODE
+          }
+
+      - name: Publish ASP.NET Web Application
+        shell: pwsh
+        run: |
+          $project = Get-ChildItem -Path . -Filter *.csproj -Recurse |
+            Select-Object -First 1
+
+          $publishPath = "$env:GITHUB_WORKSPACE\publish"
+
+          Write-Host "Project:"
+          Write-Host $project.FullName
+
+          Write-Host "Publish path:"
+          Write-Host $publishPath
+
+          if (Test-Path $publishPath) {
+            Remove-Item $publishPath -Recurse -Force
+          }
+
+          New-Item -ItemType Directory -Path $publishPath -Force | Out-Null
+
+          msbuild $project.FullName `
+            /p:Configuration=Release `
+            /p:Platform=AnyCPU `
+            /p:OutputPath="$env:GITHUB_WORKSPACE\bin\Release\" `
+            /p:DeployOnBuild=true `
+            /p:DeployDefaultTarget=WebPublish `
+            /p:WebPublishMethod=FileSystem `
+            /p:DeleteExistingFiles=true `
+            /p:publishUrl="$publishPath"
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Publish failed."
+            exit $LASTEXITCODE
+          }
+
+      - name: Verify publish
+        shell: pwsh
+        run: |
+          $publishPath = "$env:GITHUB_WORKSPACE\publish"
+
+          Write-Host "Checking:"
+          Write-Host $publishPath
+
+          if (-not (Test-Path $publishPath)) {
+            Write-Error "Publish folder was not created."
+            exit 1
+          }
+
+          $files = Get-ChildItem $publishPath -Recurse -File
+
+          if ($files.Count -eq 0) {
+            Write-Error "Publish folder is empty."
+            exit 1
+          }
+
+          Write-Host ""
+          Write-Host "Published files:"
+          $files | Select-Object FullName
+
+          Write-Host ""
+          Write-Host "Total published files: $($files.Count)"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dotnet-app
-          path: ./publish
+          name: .net-app
+          path: ${{ github.workspace }}\publish
+
 
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     needs: build
 
     steps:
       - name: Download artifact
         uses: actions/download-artifact@v4
         with:
-          name: dotnet-app
+          name: .net-app
           path: ./publish
 
+      - name: Verify downloaded artifact
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "./publish")) {
+            Write-Error "Downloaded publish folder does not exist."
+            exit 1
+          }
+
+          $files = Get-ChildItem "./publish" -Recurse -File
+
+          if ($files.Count -eq 0) {
+            Write-Error "Downloaded publish folder is empty."
+            exit 1
+          }
+
+          Write-Host "Files ready for deployment:"
+          $files | Select-Object FullName
+
       - name: Deploy to Azure Web App
+        id: deploy-to-webapp
         uses: azure/webapps-deploy@v3
         with:
-          app-name: vvksport
-          slot-name: Production
+          app-name: 'vvksport'
+          slot-name: 'Production'
           package: ./publish
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_2ACB1493A22F4B0981B76249BA8A7EED }}
